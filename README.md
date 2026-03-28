@@ -1,104 +1,71 @@
-# 💎 Game Profit Analyzer
+# 💎 Game Profit Analyzer — Real-time Multi-user
 
-ระบบคำนวณกำไรแพ็คเกจเกม — รองรับหลายร้านค้า เปรียบเทียบราคา บันทึกข้อมูลออนไลน์
+ระบบคำนวณกำไรแพ็คเกจเกม รองรับหลายคนพร้อมกัน ผ่าน Firebase Realtime Database
 
 ---
 
-## 🚀 Deploy วิธีไหนก็ได้
+## 🚀 Deploy ขึ้น Firebase (3 ขั้นตอน)
 
-### วิธีที่ 1: Firebase Hosting (แนะนำ — มี database)
+### ขั้นที่ 1: ตั้งค่า Firebase Console
 
-**ขั้นตอน:**
+1. ไปที่ https://console.firebase.google.com → Project: **chaffshop-gameprofit**
+2. เปิด **Realtime Database**:
+   - Build → Realtime Database → Create database
+   - เลือก Singapore (asia-southeast1) ✅ (ตรงกับ URL ที่ใช้แล้ว)
+   - เริ่มด้วย **Test mode** (อ่าน/เขียนได้ทุกคน 30 วัน)
+3. เปิด **Hosting**: Build → Hosting → Get started
 
-1. ติดตั้ง Firebase CLI
+### ขั้นที่ 2: Deploy
+
 ```bash
 npm install -g firebase-tools
 firebase login
+firebase deploy --project chaffshop-gameprofit
 ```
 
-2. สร้าง Firebase Project ที่ https://console.firebase.google.com
-   - Enable **Firestore Database** (Native mode)
-   - Enable **Hosting**
+### ขั้นที่ 3: Deploy Database Rules
 
-3. ใส่ Firebase Config ใน `index.html`
-   - ไปที่ Project Settings > General > Your apps > Web
-   - คัดลอก `firebaseConfig` object
-   - แก้ไขใน index.html บรรทัดที่มี `YOUR_API_KEY`
-
-4. แก้ `.firebaserc`
-```json
-{ "projects": { "default": "YOUR_PROJECT_ID" } }
-```
-
-5. Deploy
 ```bash
-firebase deploy
+firebase deploy --only database --project chaffshop-gameprofit
 ```
-URL จะเป็น: `https://YOUR_PROJECT_ID.web.app`
+
+**URL แอพ:** `https://chaffshop-gameprofit.web.app`
 
 ---
 
-### วิธีที่ 2: Vercel (ง่ายที่สุด — ไม่มี database)
+## 👥 วิธีใช้งานหลายคนพร้อมกัน
 
-1. ไปที่ https://vercel.com > New Project
-2. Import จาก GitHub หรือ Upload folder นี้
-3. Deploy เลย — ใช้ localStorage แทน Firebase
-
-หรือผ่าน CLI:
-```bash
-npm install -g vercel
-vercel --prod
-```
+1. คนแรก เปิดแอพ → กด **✨ สร้างห้องใหม่** (หรือพิมพ์รหัสห้อง เช่น `ROV-ร้านA`)
+2. **แชร์รหัสห้อง** ให้ทีมงาน
+3. ทีมงานเปิดแอพ → พิมพ์รหัสห้อง → กด **🔗 เข้าห้อง**
+4. ข้อมูลจะ **sync อัตโนมัติ** เมื่อมีการแก้ไข (real-time)
 
 ---
 
-### วิธีที่ 3: GitHub Pages (ฟรี — ไม่มี database)
-
-1. สร้าง Repository บน GitHub
-2. Push ไฟล์ทั้งหมด
-3. ไปที่ Settings > Pages > Source: main branch
-4. URL: `https://USERNAME.github.io/REPO_NAME`
-
-```bash
-git init
-git add .
-git commit -m "Initial deploy"
-git branch -M main
-git remote add origin https://github.com/USERNAME/REPO.git
-git push -u origin main
-```
-
----
-
-## 📦 โครงสร้างไฟล์
+## 📁 โครงสร้างไฟล์
 
 ```
 game-profit-app/
-├── index.html          ← แอปหลัก (HTML + CSS + JS ทั้งหมด)
-├── firebase.json       ← Firebase Hosting config
-├── firestore.rules     ← Firestore security rules
-├── firestore.indexes.json
-├── vercel.json         ← Vercel config
-├── .firebaserc         ← Firebase project ID
-├── .gitignore
+├── index.html           ← แอพทั้งหมด + Firebase Realtime SDK
+├── firebase.json        ← Hosting + Database config
+├── database.rules.json  ← Realtime Database security rules
+├── vercel.json          ← Vercel deploy config (ถ้าไม่ใช้ Firebase Hosting)
 └── README.md
 ```
 
-## 🔧 Firestore Database Rules
+## 🗄️ โครงสร้างข้อมูลใน RTDB
 
-ไฟล์ `firestore.rules` ตั้งให้ทุกคนอ่าน/เขียนได้ (เหมาะสำหรับใช้ส่วนตัว)
-ถ้าต้องการให้มี Authentication เพิ่ม:
 ```
-allow read, write: if request.auth != null;
+chaffshop-gameprofit-default-rtdb/
+├── rooms/
+│   └── {roomId}/
+│       ├── id: "ROV-ร้านA"
+│       ├── data: "{ JSON ข้อมูลทั้งหมด }"
+│       ├── updatedAt: 1234567890
+│       └── updatedBy: "u_abc123"
+└── profiles/
+    └── {name}/
+        ├── name: "ชื่อโปรไฟล์"
+        ├── data: "{ JSON }"
+        └── savedAt: 1234567890
 ```
-
-## 💾 Collections ใน Firestore
-
-| Collection | ข้อมูล |
-|---|---|
-| `saved-profiles` | โปรไฟล์ข้อมูลเกม+ร้านค้า |
-| `transactions` | ประวัติการบันทึก (optional) |
-
----
-
-Made with ❤️ — Game Profit Analyzer

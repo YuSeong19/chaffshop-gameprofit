@@ -317,10 +317,10 @@ td.shop-2nd::after{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;
 
 <!-- Firebase SDK -->
 <script type="module">
-  import { initializeApp }  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getAnalytics }   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-analytics.js";
-  import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, setDoc, getDoc, serverTimestamp }
-    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { initializeApp }   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getAnalytics }    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-analytics.js";
+  import { getDatabase, ref, set, get, onValue, remove, push, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
   // ══════════════════════════════════════════
   // 🔧 ใส่ Firebase Config ของคุณที่นี่
@@ -337,183 +337,175 @@ td.shop-2nd::after{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;
 
   const app       = initializeApp(firebaseConfig);
   const analytics = getAnalytics(app);
-  const db        = getFirestore(app);
+  const db        = getDatabase(app, "https://chaffshop-gameprofit-default-rtdb.asia-southeast1.firebasedatabase.app");
 
-  // ── Expose to global ──
-  window.fbSaveData = async (name, data) => {
+  // ──────────────────────────────────────────
+  // REALTIME DATABASE API
+  // ──────────────────────────────────────────
+  let _activeRoomId = null;
+  let _roomListener = null;  // onValue unsubscribe fn
+
+  // ── path helpers ──
+  const roomPath    = (id) => ref(db, `rooms/${id}`);
+  const profilePath = (name) => ref(db, `profiles/${name}`);
+
+  // ── ROOMS ──
+  window.fbCreateRoom = async (roomId, data) => {
     try {
-      const ref = doc(db, 'saved-profiles', name);
-      await setDoc(ref, { name, data: JSON.stringify(data), updatedAt: serverTimestamp() });
+      await set(roomPath(roomId), {
+        id: roomId,
+        data: JSON.stringify(data),
+        updatedAt: Date.now(),
+        updatedBy: window._myUserId || 'anon'
+      });
       return true;
     } catch(e) { console.error(e); return false; }
   };
 
+  window.fbGetRoom = async (roomId) => {
+    try {
+      const snap = await get(roomPath(roomId));
+      if (!snap.exists()) return null;
+      return JSON.parse(snap.val().data);
+    } catch(e) { return null; }
+  };
+
+  window.fbPushRoomData = async (roomId, data) => {
+    try {
+      await set(roomPath(roomId), {
+        id: roomId,
+        data: JSON.stringify(data),
+        updatedAt: Date.now(),
+        updatedBy: window._myUserId || 'anon'
+      });
+      return true;
+    } catch(e) { return false; }
+  };
+
+  window.fbListRooms = async () => {
+    try {
+      const snap = await get(ref(db, 'rooms'));
+      if (!snap.exists()) return [];
+      return Object.entries(snap.val()).map(([id, v]) => ({ id, ...v }));
+    } catch(e) { return []; }
+  };
+
+  window.fbDeleteRoom = async (roomId) => {
+    try { await remove(roomPath(roomId)); return true; }
+    catch(e) { return false; }
+  };
+
+  // ── REAL-TIME LISTENER (onValue) ──
+  window.fbSubscribeRoom = (roomId, onUpdate) => {
+    // detach old listener
+    if (_roomListener) { _roomListener(); _roomListener = null; }
+    _activeRoomId = roomId;
+    // onValue returns unsubscribe fn
+    _roomListener = onValue(roomPath(roomId), (snap) => {
+      if (!snap.exists()) return;
+      const d = snap.val();
+      if (d.updatedBy === window._myUserId) return; // skip own writes
+      try { onUpdate(JSON.parse(d.data), d.updatedBy, d.updatedAt); }
+      catch(e) {}
+    });
+    return _roomListener;
+  };
+
+  window.fbUnsubscribeRoom = () => {
+    if (_roomListener) { _roomListener(); _roomListener = null; }
+    _activeRoomId = null;
+  };
+
+  window.fbActiveRoomId = () => _activeRoomId;
+
+  // ── PROFILES (single-user save/load) ──
+  window.fbSaveData = async (name, data) => {
+    try {
+      await set(profilePath(name), { name, data: JSON.stringify(data), savedAt: Date.now() });
+      return true;
+    } catch(e) { return false; }
+  };
+
   window.fbLoadData = async (name) => {
     try {
-      const ref  = doc(db, 'saved-profiles', name);
-      const snap = await getDoc(ref);
-      if (!snap.exists()) return null;
-      return JSON.parse(snap.data().data);
-    } catch(e) { console.error(e); return null; }
+      const snap = await get(profilePath(name));
+      return snap.exists() ? JSON.parse(snap.val().data) : null;
+    } catch(e) { return null; }
   };
 
   window.fbListProfiles = async () => {
     try {
-      const snap = await getDocs(collection(db, 'saved-profiles'));
-      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    } catch(e) { console.error(e); return []; }
-  };
-
-  window.fbDeleteProfile = async (name) => {
-    try {
-      await deleteDoc(doc(db, 'saved-profiles', name));
-      return true;
-    } catch(e) { return false; }
-  };
-
-  window.fbSaveTransaction = async (tx) => {
-    try {
-      await addDoc(collection(db, 'transactions'), { ...tx, createdAt: serverTimestamp() });
-      return true;
-    } catch(e) { return false; }
-  };
-
-  window.fbGetTransactions = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'transactions'));
-      return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const snap = await get(ref(db, 'profiles'));
+      if (!snap.exists()) return [];
+      return Object.entries(snap.val()).map(([id, v]) => ({ id, ...v }));
     } catch(e) { return []; }
   };
 
+  window.fbDeleteProfile = async (name) => {
+    try { await remove(profilePath(name)); return true; }
+    catch(e) { return false; }
+  };
+
   window.firebaseReady = true;
-  console.log('✅ Firebase connected');
+  console.log('✅ Firebase Realtime Database ready');
+
 
 // ══════════════════════════════════════════
-// CLOUD SAVE / LOAD
+// REALTIME ROOM + CLOUD SYSTEM
 // ══════════════════════════════════════════
+
+// ── User identity ──
+window._myUserId = localStorage.getItem('gpa_userId') || (() => {
+  const id = 'u_' + Math.random().toString(36).slice(2, 9);
+  localStorage.setItem('gpa_userId', id);
+  return id;
+})();
+
+let _pendingRemoteData = null; // data waiting to be applied
+
+// ── Collect current form data ──
 function collectCurrentData() {
-  const pkgRows = document.querySelectorAll('.pkg-row');
+  const pkgRows  = document.querySelectorAll('.pkg-row');
   const shopCards = document.querySelectorAll('.shop-card');
   const pkgs = Array.from(pkgRows).map(row => ({
-    name: row.querySelector('.name-input')?.value || '',
-    sell: row.querySelector('.sell-input')?.value || '',
+    name:  row.querySelector('.name-input')?.value || '',
+    sell:  row.querySelector('.sell-input')?.value || '',
     costs: Array.from(row.querySelectorAll('.sh-cost-cell')).map(i => i.value)
   }));
   const shops = Array.from(shopCards).map(c => ({
     name: c.querySelector('.shop-name-input')?.value || '',
-    url: c.querySelector('.shop-link-input')?.value || ''
+    url:  c.querySelector('.shop-link-input')?.value || ''
   }));
   return {
     game: selectedGame ? { id: selectedGame.id, name: selectedGame.name, icon: selectedGame.icon, unit: selectedGame.unit } : null,
-    pkgs, shops,
-    savedAt: new Date().toISOString()
+    pkgs, shops, savedAt: new Date().toISOString()
   };
 }
 
-async function saveProfile() {
-  const name = document.getElementById('profileName').value.trim();
-  if (!name) { alert('กรุณาตั้งชื่อโปรไฟล์ก่อนบันทึก'); return; }
-  if (!window.fbSaveData) { alert('Firebase ยังไม่พร้อม กรุณาตั้งค่า firebaseConfig ก่อน'); return; }
-  const data = collectCurrentData();
-  const ok = await window.fbSaveData(name, data);
-  if (ok) {
-    setFbStatus(`✅ บันทึก "${name}" สำเร็จ`, 'var(--sage)');
-    // also save to localStorage as backup
-    localStorage.setItem('gpa_profile_' + name, JSON.stringify(data));
-  } else {
-    setFbStatus('❌ บันทึกไม่สำเร็จ ตรวจสอบ Firebase config', 'var(--rose)');
-    // fallback: localStorage only
-    const data2 = collectCurrentData();
-    localStorage.setItem('gpa_profile_' + name, JSON.stringify(data2));
-    setFbStatus('💾 บันทึกใน localStorage (offline)', 'var(--amber)');
-  }
-}
-
-async function showLoadModal() {
-  document.getElementById('loadModalBg').style.display = 'flex';
-  const listEl = document.getElementById('profileList');
-  listEl.innerHTML = '<div style="color:var(--txt3);font-size:13px;text-align:center;padding:20px">⏳ กำลังโหลด...</div>';
-  let profiles = [];
-  // load from firebase
-  if (window.fbListProfiles) {
-    profiles = await window.fbListProfiles();
-  }
-  // merge with localStorage
-  const lsKeys = Object.keys(localStorage).filter(k => k.startsWith('gpa_profile_'));
-  lsKeys.forEach(k => {
-    const n = k.replace('gpa_profile_', '');
-    if (!profiles.find(p => p.id === n)) {
-      profiles.push({ id: n, name: n, _local: true });
-    }
-  });
-  if (profiles.length === 0) {
-    listEl.innerHTML = '<div style="color:var(--txt3);font-size:13px;text-align:center;padding:20px">ยังไม่มีโปรไฟล์ที่บันทึกไว้</div>';
-    return;
-  }
-  listEl.innerHTML = profiles.map(p => `
-    <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:8px">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:700;color:var(--txt)">${p.name || p.id}</div>
-        <div style="font-size:10px;color:var(--txt3)">${p._local ? '💾 localStorage' : '☁️ Firebase'}</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <button onclick="loadProfile('${p.id}',${p._local?'true':'false'})"
-          style="background:var(--tealf);border:1px solid var(--tealb);color:var(--teal);font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:5px 12px;border-radius:7px;cursor:pointer">
-          📂 โหลด
-        </button>
-        <button onclick="deleteProfile('${p.id}',${p._local?'true':'false'})"
-          style="background:var(--rosef);border:1px solid var(--roseb);color:var(--rose);font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:5px 10px;border-radius:7px;cursor:pointer">
-          🗑️
-        </button>
-      </div>
-    </div>`).join('');
-}
-
-async function loadProfile(name, isLocal = false) {
-  let data = null;
-  if (!isLocal && window.fbLoadData) data = await window.fbLoadData(name);
-  if (!data) {
-    const raw = localStorage.getItem('gpa_profile_' + name);
-    if (raw) data = JSON.parse(raw);
-  }
-  if (!data) { alert('โหลดข้อมูลไม่สำเร็จ'); return; }
-  document.getElementById('loadModalBg').style.display = 'none';
-  applyProfile(data);
-  setFbStatus(`✅ โหลดโปรไฟล์ "${name}" สำเร็จ`, 'var(--sage)');
-}
-
+// ── Apply profile data to UI ──
 function applyProfile(data) {
-  // set game
   if (data.game) {
     const found = allGames().find(g => g.id === data.game.id);
-    if (found) { selectedGame = found; }
-    else {
-      // custom game from saved data
-      selectedGame = { ...data.game, pkgs: [] };
-      customGames.push(selectedGame);
-    }
+    selectedGame = found || { ...data.game, pkgs: [] };
+    if (!found) customGames.push(selectedGame);
     renderGameGrid();
     document.getElementById('step2-title').textContent = `${selectedGame.icon} ${selectedGame.name}`;
-    document.getElementById('step2-sub').textContent = `หน่วย: ${selectedGame.unit} | กรอกราคาขายและต้นทุนแต่ละร้าน`;
+    document.getElementById('step2-sub').textContent   = `หน่วย: ${selectedGame.unit}`;
   }
-  // clear and rebuild shops first
   document.getElementById('shopsGrid').innerHTML = '';
   shopId = 0;
   (data.shops || []).forEach(s => addShop(s.name));
-  // set shop URLs
   const shopCards = document.querySelectorAll('.shop-card');
   (data.shops || []).forEach((s, i) => {
     if (s.url && shopCards[i]) {
-      const urlInput = shopCards[i].querySelector('.shop-link-input');
-      if (urlInput) { urlInput.value = s.url; updateLinkBtn(shopCards[i].dataset.id); }
+      const ui = shopCards[i].querySelector('.shop-link-input');
+      if (ui) { ui.value = s.url; updateLinkBtn(shopCards[i].dataset.id); }
     }
   });
-  // clear and rebuild packages
   document.getElementById('pkgArea').innerHTML = '';
   pkgId = 0;
   (data.pkgs || []).forEach(p => {
     addPkg(p.name, '', p.sell);
-    // set shop costs
     const row = document.querySelector('.pkg-row:last-child');
     if (row) {
       const cells = row.querySelectorAll('.sh-cost-cell');
@@ -524,9 +516,187 @@ function applyProfile(data) {
   goStep(2);
 }
 
-async function deleteProfile(name, isLocal = false) {
-  if (!confirm(`ลบโปรไฟล์ "${name}" ใช่หรือไม่?`)) return;
+// ── Push current data to active room (debounced 1.5s) ──
+function pushToRoom() {
+  const roomId = window.fbActiveRoomId ? window.fbActiveRoomId() : null;
+  if (!roomId || !window.fbPushRoomData) return;
+  clearTimeout(window._pushTimer);
+  window._pushTimer = setTimeout(async () => {
+    const data = collectCurrentData();
+    await window.fbPushRoomData(roomId, data);
+    setFbStatus(`🔄 ซิงค์ห้อง "${roomId}" แล้ว`, 'var(--sage)');
+  }, 1500);
+}
+
+// ── Auto-push on any input change ──
+document.addEventListener('input', (e) => {
+  if (e.target.closest('#cloudBar') || e.target.closest('#loadModalBg') || e.target.closest('.modal')) return;
+  pushToRoom();
+});
+
+// ── ROOM: Create ──
+async function createNewRoom() {
+  const raw = document.getElementById('roomInput').value.trim();
+  const roomId = raw || ('room-' + Math.random().toString(36).slice(2, 7).toUpperCase());
+  document.getElementById('roomInput').value = roomId;
+  if (!window.fbCreateRoom) { setFbStatus('Firebase ยังไม่พร้อม', 'var(--rose)'); return; }
+  setFbStatus('⏳ กำลังสร้างห้อง...', 'var(--amber)');
+  const data = collectCurrentData();
+  const ok = await window.fbCreateRoom(roomId, data);
+  if (ok) {
+    subscribeToRoom(roomId);
+    setFbStatus(`✅ สร้างห้อง "${roomId}" สำเร็จ`, 'var(--sage)');
+    showRoomIndicator(roomId);
+  } else {
+    setFbStatus('❌ สร้างไม่สำเร็จ', 'var(--rose)');
+  }
+}
+
+// ── ROOM: Join ──
+async function joinRoom() {
+  const roomId = document.getElementById('roomInput').value.trim();
+  if (!roomId) { alert('กรุณาใส่รหัสห้องก่อน'); return; }
+  if (!window.fbGetRoom) { setFbStatus('Firebase ยังไม่พร้อม', 'var(--rose)'); return; }
+  setFbStatus(`⏳ กำลังเข้าห้อง "${roomId}"...`, 'var(--amber)');
+  const data = await window.fbGetRoom(roomId);
+  if (data) {
+    applyProfile(data);
+    subscribeToRoom(roomId);
+    setFbStatus(`✅ เข้าห้อง "${roomId}" สำเร็จ`, 'var(--sage)');
+    showRoomIndicator(roomId);
+  } else {
+    // room doesn't exist — create it
+    const ok = await window.fbCreateRoom(roomId, collectCurrentData());
+    if (ok) {
+      subscribeToRoom(roomId);
+      setFbStatus(`✨ สร้างห้องใหม่ "${roomId}"`, 'var(--sage)');
+      showRoomIndicator(roomId);
+    } else {
+      setFbStatus('❌ เข้าห้องไม่สำเร็จ', 'var(--rose)');
+    }
+  }
+}
+
+// ── ROOM: Leave ──
+function leaveRoom() {
+  if (window.fbUnsubscribeRoom) window.fbUnsubscribeRoom();
+  document.getElementById('roomIndicator').style.display = 'none';
+  document.getElementById('leaveRoomBtn').style.display = 'none';
+  dismissRemote();
+  setFbStatus('ออกจากห้องแล้ว', 'var(--txt3)');
+  setDot('var(--amber)');
+}
+
+// ── ROOM: Subscribe real-time ──
+function subscribeToRoom(roomId) {
+  if (!window.fbSubscribeRoom) return;
+  window.fbSubscribeRoom(roomId, (remoteData, updatedBy, updatedAt) => {
+    // show toast — don't apply automatically
+    _pendingRemoteData = remoteData;
+    showRemoteToast(`🔄 "${updatedBy}" อัปเดตข้อมูล — กดรับเพื่อซิงค์`);
+  });
+  document.getElementById('leaveRoomBtn').style.display = 'flex';
+  setDot('var(--sage)');
+}
+
+// ── ROOM UI helpers ──
+function showRoomIndicator(roomId) {
+  const el = document.getElementById('roomIndicator');
+  el.style.display = 'flex';
+  document.getElementById('roomNameDisplay').textContent = roomId;
+}
+
+function showRemoteToast(msg) {
+  const t = document.getElementById('remoteToast');
+  document.getElementById('remoteToastMsg').textContent = msg;
+  t.style.display = 'flex';
+}
+
+function applyRemoteUpdate() {
+  if (!_pendingRemoteData) return;
+  applyProfile(_pendingRemoteData);
+  _pendingRemoteData = null;
+  dismissRemote();
+  setFbStatus('✅ รับการอัปเดตจากทีมแล้ว', 'var(--sage)');
+}
+
+function dismissRemote() {
+  document.getElementById('remoteToast').style.display = 'none';
+  _pendingRemoteData = null;
+}
+
+function setDot(color) {
+  const d = document.getElementById('fbDot');
+  if (d) d.style.background = color;
+}
+
+// ── Profile save/load (single-user backup) ──
+async function saveProfile() {
+  const name = document.getElementById('roomInput').value.trim() || 'default';
+  if (!window.fbSaveData) { setFbStatus('Firebase ยังไม่พร้อม', 'var(--rose)'); return; }
+  const data = collectCurrentData();
+  localStorage.setItem('gpa_profile_' + name, JSON.stringify(data));
+  const ok = await window.fbSaveData(name, data);
+  setFbStatus(ok ? `💾 บันทึก "${name}" แล้ว` : '💾 บันทึก localStorage เท่านั้น',
+              ok ? 'var(--sage)' : 'var(--amber)');
+}
+
+async function showLoadModal() {
+  document.getElementById('loadModalBg').style.display = 'flex';
+  const listEl = document.getElementById('profileList');
+  listEl.innerHTML = '<div style="color:var(--txt3);font-size:13px;text-align:center;padding:20px">⏳ กำลังโหลด...</div>';
+  let profiles = [];
+  if (window.fbListRooms)    profiles = await window.fbListRooms();
+  if (window.fbListProfiles) {
+    const saved = await window.fbListProfiles();
+    saved.forEach(s => { if (!profiles.find(p => p.id === s.id)) profiles.push({ ...s, _profile: true }); });
+  }
+  const lsKeys = Object.keys(localStorage).filter(k => k.startsWith('gpa_profile_'));
+  lsKeys.forEach(k => {
+    const n = k.replace('gpa_profile_', '');
+    if (!profiles.find(p => p.id === n)) profiles.push({ id: n, name: n, _local: true });
+  });
+  if (!profiles.length) {
+    listEl.innerHTML = '<div style="color:var(--txt3);font-size:13px;text-align:center;padding:20px">ยังไม่มีห้องหรือโปรไฟล์</div>';
+    return;
+  }
+  listEl.innerHTML = profiles.map(p => {
+    const tag = p._local ? '💾 local' : p._profile ? '☁️ profile' : '🔗 room';
+    const tagColor = p._local ? 'var(--txt3)' : p._profile ? 'var(--sky)' : 'var(--sage)';
+    return `<div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:9px;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:700;color:var(--txt)">${p.name || p.id}</div>
+        <div style="font-size:10px;color:${tagColor}">${tag}</div>
+      </div>
+      <div style="display:flex;gap:5px;flex-shrink:0">
+        ${!p._local && !p._profile ? `<button onclick="joinRoomById('${p.id}')" style="background:var(--sagef);border:1px solid var(--sageb);color:var(--sage);font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:5px 10px;border-radius:7px;cursor:pointer">🔗 เข้าห้อง</button>` : ''}
+        <button onclick="loadProfileById('${p.id}',${p._local})" style="background:var(--tealf);border:1px solid var(--tealb);color:var(--teal);font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:5px 10px;border-radius:7px;cursor:pointer">📂 โหลด</button>
+        <button onclick="deleteProfileById('${p.id}',${p._local})" style="background:var(--rosef);border:1px solid var(--roseb);color:var(--rose);font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:5px 8px;border-radius:7px;cursor:pointer">🗑️</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function joinRoomById(id) {
+  document.getElementById('loadModalBg').style.display = 'none';
+  document.getElementById('roomInput').value = id;
+  await joinRoom();
+}
+
+async function loadProfileById(name, isLocal) {
+  let data = null;
+  if (!isLocal && window.fbLoadData) data = await window.fbLoadData(name);
+  if (!data) { const r = localStorage.getItem('gpa_profile_' + name); if (r) data = JSON.parse(r); }
+  if (!data) { alert('โหลดไม่สำเร็จ'); return; }
+  document.getElementById('loadModalBg').style.display = 'none';
+  applyProfile(data);
+  setFbStatus(`✅ โหลด "${name}" สำเร็จ`, 'var(--sage)');
+}
+
+async function deleteProfileById(name, isLocal) {
+  if (!confirm(`ลบ "${name}" ใช่หรือไม่?`)) return;
   if (!isLocal && window.fbDeleteProfile) await window.fbDeleteProfile(name);
+  if (!isLocal && window.fbDeleteRoom)    await window.fbDeleteRoom(name);
   localStorage.removeItem('gpa_profile_' + name);
   showLoadModal();
 }
@@ -534,30 +704,33 @@ async function deleteProfile(name, isLocal = false) {
 function setFbStatus(msg, color) {
   const el = document.getElementById('fbStatus');
   if (el) { el.textContent = msg; el.style.color = color || 'var(--txt3)'; }
-  setTimeout(() => { if (el) { el.textContent = 'Firebase พร้อมใช้งาน'; el.style.color = ''; } }, 4000);
+  clearTimeout(window._statusTimer);
+  window._statusTimer = setTimeout(() => {
+    if (el) { el.textContent = window.fbActiveRoomId?.() ? `ซิงค์ห้อง: ${window.fbActiveRoomId()}` : 'พร้อมใช้งาน'; el.style.color = ''; }
+  }, 4000);
 }
 
-// Init: check firebase status
+// Init status
 setTimeout(() => {
   const el = document.getElementById('fbStatus');
   if (window.firebaseReady && el) {
-    el.textContent = 'Firebase พร้อมใช้งาน ✅';
+    el.textContent = 'Firebase พร้อม ✅';
     el.style.color = 'var(--sage)';
-    setTimeout(() => { el.textContent = 'เชื่อมต่อแล้ว'; el.style.color = ''; }, 3000);
+    setDot('var(--teal)');
+    setTimeout(() => { el.textContent = 'พร้อมใช้งาน'; el.style.color = ''; }, 3000);
   } else if (el) {
     el.textContent = 'ทำงาน offline (localStorage)';
     el.style.color = 'var(--amber)';
+    setDot('var(--amber)');
   }
 }, 2000);
 
-// Auto-save to localStorage every 30 seconds
+// Auto-save localStorage every 60s
 setInterval(() => {
-  const name = document.getElementById('profileName')?.value.trim();
-  if (name && document.querySelectorAll('.pkg-row').length > 0) {
+  try {
     localStorage.setItem('gpa_autosave', JSON.stringify(collectCurrentData()));
-    localStorage.setItem('gpa_autosave_name', name);
-  }
-}, 30000);
+  } catch(e) {}
+}, 60000);
 
 </script>
 </head>
@@ -566,21 +739,49 @@ setInterval(() => {
 
 <!-- Header -->
 
-<!-- ── Save/Load Bar ── -->
-<div id="cloudBar" style="background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:10px 14px;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-  <div style="display:flex;align-items:center;gap:6px;flex:1;min-width:180px">
-    <span style="font-size:18px">☁️</span>
-    <div>
-      <div style="font-size:12px;font-weight:700;color:var(--teal)">บันทึกออนไลน์</div>
-      <div style="font-size:10px;color:var(--txt3)" id="fbStatus">กำลังเชื่อมต่อ Firebase...</div>
+<!-- ── Realtime Bar ── -->
+<div id="cloudBar" style="background:var(--surf);border:1px solid var(--bdr);border-radius:12px;padding:10px 14px;margin-bottom:16px">
+
+  <!-- Row 1: status + room info -->
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:7px;flex:1;min-width:160px">
+      <span id="fbDot" style="width:8px;height:8px;border-radius:50%;background:var(--txt3);flex-shrink:0;transition:background .3s"></span>
+      <div>
+        <div id="fbStatusMain" style="font-size:12px;font-weight:700;color:var(--teal)">เชื่อมต่อ Firebase</div>
+        <div id="fbStatus" style="font-size:10px;color:var(--txt3)">กำลังโหลด...</div>
+      </div>
+    </div>
+    <div id="roomIndicator" style="display:none;background:var(--sagef);border:1px solid var(--sageb);border-radius:8px;padding:4px 10px;font-size:11px;color:var(--sage);font-weight:600;display:flex;align-items:center;gap:6px">
+      <span id="roomPulse" style="width:7px;height:7px;border-radius:50%;background:var(--sage);animation:pulse 1.5s infinite"></span>
+      <span>ห้อง: </span><span id="roomNameDisplay" style="font-weight:700">—</span>
+      <span id="activeUsers" style="color:var(--sage)"></span>
     </div>
   </div>
-  <input type="text" id="profileName" placeholder="ชื่อโปรไฟล์ เช่น ร้านA-ROV"
-    style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
-    color:var(--txt);font-family:'Sarabun',sans-serif;font-size:13px;padding:7px 11px;outline:none" />
-  <button onclick="saveProfile()" style="background:var(--teal);border:none;color:#1a1d23;font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:opacity .18s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">💾 บันทึก</button>
-  <button onclick="showLoadModal()" style="background:var(--surf2);border:1px solid var(--bdr);color:var(--txt2);font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:all .18s" onmouseover="this.style.borderColor='var(--tealb)';this.style.color='var(--teal)'" onmouseout="this.style.borderColor='var(--bdr)';this.style.color='var(--txt2)'">📂 โหลด</button>
+
+  <!-- Row 2: room controls -->
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <input type="text" id="roomInput" placeholder="🔑 รหัสห้อง เช่น ROV-Shop-A"
+      style="flex:1;min-width:150px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;
+      color:var(--txt);font-family:'Sarabun',sans-serif;font-size:13px;padding:7px 11px;outline:none;transition:border-color .18s"
+      onfocus="this.style.borderColor='var(--tealb)'" onblur="this.style.borderColor='var(--bdr)'"
+      onkeydown="if(event.key==='Enter') joinRoom()" />
+    <button onclick="joinRoom()" style="background:var(--teal);border:none;color:#1a1d23;font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap">🔗 เข้าห้อง</button>
+    <button onclick="createNewRoom()" style="background:var(--amberf);border:1px solid var(--amberb);color:var(--amber);font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap">✨ สร้างห้องใหม่</button>
+    <button onclick="leaveRoom()" id="leaveRoomBtn" style="display:none;background:var(--rosef);border:1px solid var(--roseb);color:var(--rose);font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 12px;border-radius:8px;cursor:pointer;white-space:nowrap">✕ ออกห้อง</button>
+    <button onclick="showLoadModal()" style="background:var(--surf2);border:1px solid var(--bdr);color:var(--txt2);font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;padding:8px 12px;border-radius:8px;cursor:pointer;white-space:nowrap">📂 โปรไฟล์</button>
+  </div>
+
+  <!-- Remote update toast -->
+  <div id="remoteToast" style="display:none;margin-top:8px;background:rgba(78,205,196,.1);border:1px solid var(--tealb);border-radius:8px;padding:7px 12px;font-size:12px;color:var(--teal);display:none;align-items:center;gap:8px">
+    <span>🔄</span><span id="remoteToastMsg">มีการอัปเดตจากผู้ใช้อื่น</span>
+    <button onclick="applyRemoteUpdate()" style="margin-left:auto;background:var(--teal);border:none;color:#1a1d23;font-family:'Sarabun',sans-serif;font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;cursor:pointer">รับการอัปเดต</button>
+    <button onclick="dismissRemote()" style="background:none;border:none;color:var(--txt3);cursor:pointer;font-size:14px">✕</button>
+  </div>
 </div>
+
+<style>
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+</style>
 
 <!-- Load Modal -->
 <div id="loadModalBg" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);z-index:300;align-items:center;justify-content:center;padding:16px"
