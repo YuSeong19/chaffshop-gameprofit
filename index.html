@@ -294,6 +294,12 @@ tr:hover td{background:rgba(255,255,255,.018)}
 .cs-cost{font-size:9px;color:var(--txt3)}
 .cs-profit{font-size:14px;font-weight:700;line-height:1.1}
 .cs-pct{font-size:10px;font-weight:600}
+/* ── shop highlight td ── */
+td.shop-best{background:rgba(107,203,119,.08);position:relative}
+td.shop-best::after{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--sage);border-radius:0 2px 2px 0}
+td.shop-2nd{background:rgba(244,185,66,.07);position:relative}
+td.shop-2nd::after{content:'';position:absolute;top:0;left:0;bottom:0;width:3px;background:var(--amber);border-radius:0 2px 2px 0}
+.rank-crown{font-size:11px;margin-left:4px}
 .pb-row{display:flex;align-items:center;gap:5px;justify-content:flex-end}
 .pb-track{width:38px;height:4px;background:var(--bg2);border-radius:2px;overflow:hidden;flex-shrink:0}
 .pb-fill{height:100%;border-radius:2px}
@@ -707,6 +713,12 @@ setInterval(() => {
   </div>
 
   <div class="tbl-wrap">
+    <div style="padding:8px 14px;background:var(--bg3);border-bottom:1px solid var(--bdr);display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <span style="font-size:10px;color:var(--txt3);font-weight:600;text-transform:uppercase;letter-spacing:.5px">ตำนาน:</span>
+      <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--sage)"><span style="display:inline-block;width:3px;height:14px;background:var(--sage);border-radius:2px"></span>🥇 กำไรดีที่สุด</span>
+      <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--amber)"><span style="display:inline-block;width:3px;height:14px;background:var(--amber);border-radius:2px"></span>🥈 กำไรรองลงมา</span>
+      <span style="font-size:10px;color:var(--txt3)">เปรียบเทียบในแต่ละแพ็คเกจ</span>
+    </div>
     <div class="tbl-top">
       <div class="tbl-ttl">📋 ตารางเปรียบเทียบกำไร</div>
       <div class="sort-row">
@@ -1217,13 +1229,37 @@ function renderTable(data,unit,shops){
   const pr=maxProf-minProf||1;
   let th=`<th>แพ็คเกจ</th>
     <th class="r">ราคาขาย<br/><span style="font-size:8px;font-weight:400;opacity:.6;text-transform:none;letter-spacing:0">ที่ลูกค้าจ่าย</span></th>`;
+  // compute overall best shop (most wins across packages)
+  const shopWins = new Array(shops.length).fill(0);
+  d.forEach(p=>{
+    const valid=p.shopRes.filter(s=>s.cost>0&&s.profitPct!==null);
+    if(valid.length<1) return;
+    const best=valid.reduce((a,b)=>a.profitPct>b.profitPct?a:b);
+    const bestIdx=p.shopRes.indexOf(best);
+    if(bestIdx>=0) shopWins[bestIdx]++;
+  });
+  const maxWins=Math.max(...shopWins);
+  const overallBestIdx=maxWins>0?shopWins.indexOf(maxWins):-1;
+  const secondWins=[...shopWins];
+  if(overallBestIdx>=0) secondWins[overallBestIdx]=-1;
+  const max2Wins=Math.max(...secondWins);
+  const overall2ndIdx=max2Wins>0?secondWins.indexOf(max2Wins):-1;
+
   shops.forEach((sh,i)=>{
     const pal=sh.pal;
-    th+=`<th class="r" style="border-top:2px solid ${pal.color}30;min-width:90px">
+    const isOverallBest = i===overallBestIdx;
+    const isOverall2nd  = i===overall2ndIdx;
+    const borderTop = isOverallBest ? `3px solid ${pal.color}` : isOverall2nd ? `2px solid ${pal.color}80` : `2px solid ${pal.color}30`;
+    const headerBg  = isOverallBest ? `${pal.bg}` : isOverall2nd ? `${pal.bg}80` : 'transparent';
+    const winBadge  = isOverallBest ? `<span style="font-size:9px;margin-top:2px">🥇 ดีที่สุด (${maxWins}/${d.length} แพ็ค)</span>`
+                    : isOverall2nd  ? `<span style="font-size:9px;margin-top:2px;color:var(--amber)">🥈 รอง (${max2Wins}/${d.length} แพ็ค)</span>`
+                    : '';
+    th+=`<th class="r" style="border-top:${borderTop};min-width:90px;background:${headerBg}">
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
         <span style="font-size:8px;background:${pal.bg};color:${pal.color};border:1px solid ${pal.border};padding:1px 5px;border-radius:4px;font-weight:700">ร้านที่ ${sh.num}</span>
         <span style="color:${pal.color};font-size:10px;font-weight:700">${sh.name}</span>
-        <span style="font-size:8px;opacity:.5;font-weight:400;text-transform:none;letter-spacing:0">ทุน · กำไร · %</span>
+        <span style="font-size:8px;opacity:.6;font-weight:400;text-transform:none;letter-spacing:0">ทุน · กำไร · %</span>
+        ${winBadge}
       </div></th>`;
   });
   if(shops.length>1) th+=`<th class="r" style="min-width:90px">ส่วนต่าง<br/><span style="font-size:8px;font-weight:400;opacity:.6;text-transform:none;letter-spacing:0">ดีสุด vs แย่สุด</span></th>`;
@@ -1236,14 +1272,24 @@ function renderTable(data,unit,shops){
     const bw=((p.avgProfPct-minProf)/pr)*100;
     const bc=p.avgProfPct>=40?'#6bcb77':p.avgProfPct>=20?'#f4b942':'#e07070';
     const pc=p.avgProfPct>=40?'up':p.avgProfPct>=20?'md':'dn';
+    // rank shops by profit for this package
+    const validShops = p.shopRes.filter(s=>s.cost>0 && s.profitPct!==null);
+    const sortedByProfit = [...validShops].sort((a,b)=>b.profitPct-a.profitPct);
+    const rank1 = sortedByProfit[0];
+    const rank2 = sortedByProfit[1];
+
     const shopCols=p.shopRes.map((s,si)=>{
       const pal=s.pal;
       const hasCost=s.cost>0;
-      const profColor=!hasCost?'var(--txt3)':s.profit>=0?pal.color:'var(--rose)';
+      const isBest = hasCost && rank1 && s.name===rank1.name && validShops.length>=1;
+      const is2nd  = hasCost && rank2 && s.name===rank2.name && validShops.length>=2;
+      const hlClass = isBest ? 'shop-best' : is2nd ? 'shop-2nd' : '';
+      const profColor = !hasCost ? 'var(--txt3)' : isBest ? 'var(--sage)' : is2nd ? 'var(--amber)' : s.profit>=0 ? pal.color : 'var(--rose)';
       const sc=!hasCost?'md':s.profitPct>=40?'up':s.profitPct>=20?'md':'dn';
-      return`<td class="r"><div class="cell-shop">
+      const crown = isBest ? '<span class="rank-crown">🥇</span>' : is2nd ? '<span class="rank-crown">🥈</span>' : '';
+      return`<td class="r ${hlClass}"><div class="cell-shop">
         <div class="cs-cost">${hasCost?'ทุน ฿'+s.cost.toFixed(2):'—'}</div>
-        <div class="cs-profit" style="color:${profColor}">${hasCost?(s.profit>=0?'+':'')+' ฿'+s.profit.toFixed(2):'—'}</div>
+        <div class="cs-profit" style="color:${profColor}">${hasCost?(s.profit>=0?'+':'')+' ฿'+s.profit.toFixed(2):'—'}${crown}</div>
         <div class="cs-pct ${sc}">${hasCost&&s.profitPct!==null?s.profitPct.toFixed(1)+'%':'—'}</div>
       </div></td>`;
     }).join('');
