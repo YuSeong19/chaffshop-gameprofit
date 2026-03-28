@@ -362,37 +362,49 @@ const app = initializeApp(firebaseConfig);
 getAnalytics(app);
 const db  = getDatabase(app, "https://chaffshop-gameprofit-default-rtdb.asia-southeast1.firebasedatabase.app");
 
-// ── path เดียวทั้งแอพ: /shop-data ──
-const SHOP_PATH = 'shop-data';
-const shopRef   = ref(db, SHOP_PATH);
+// ── Dynamic path per game: /games/{gameId} ──
+let _currentListener = null;  // active onValue unsubscribe
 
-// ── Save data to Firebase ──
-window.fbSave = async (data) => {
+const gamePath = (gameId) => ref(db, `games/${gameId}`);
+
+// ── Save to current game path ──
+window.fbSave = async (gameId, data) => {
   try {
-    await set(shopRef, { data: JSON.stringify(data), updatedAt: Date.now() });
+    await set(gamePath(gameId), { data: JSON.stringify(data), updatedAt: Date.now() });
     return true;
   } catch(e) { console.error('fbSave:', e); return false; }
 };
 
-// ── Load once ──
-window.fbLoad = async () => {
+// ── Load once for a game ──
+window.fbLoad = async (gameId) => {
   try {
-    const snap = await get(shopRef);
+    const snap = await get(gamePath(gameId));
     return snap.exists() ? JSON.parse(snap.val().data) : null;
   } catch(e) { return null; }
 };
 
-// ── Listen real-time ──
-window.fbListen = (callback) => {
-  return onValue(shopRef, (snap) => {
+// ── Listen real-time for a game (detaches previous) ──
+window.fbListen = (gameId, callback) => {
+  if (_currentListener) { _currentListener(); _currentListener = null; }
+  _currentListener = onValue(gamePath(gameId), (snap) => {
     if (!snap.exists()) return;
     try { callback(JSON.parse(snap.val().data), snap.val().updatedAt); }
     catch(e) {}
   });
+  return _currentListener;
+};
+
+// ── List all saved games ──
+window.fbListGames = async () => {
+  try {
+    const snap = await get(ref(db, 'games'));
+    if (!snap.exists()) return [];
+    return Object.entries(snap.val()).map(([id, v]) => ({ id, updatedAt: v.updatedAt }));
+  } catch(e) { return []; }
 };
 
 window.firebaseReady = true;
-console.log('✅ Firebase RTDB ready — path:', SHOP_PATH);
+console.log('✅ Firebase RTDB ready — per-game paths at /games/{gameId}');
 </script>
 </head>
 <body>
@@ -628,20 +640,30 @@ function selectGame(id){
 function step1Next(){
   if(!selectedGame){ showErr('err-1','⚠️ กรุณาเลือกเกมก่อน'); return; }
   document.getElementById('step2-title').textContent = `${selectedGame.icon} ${selectedGame.name}`;
-  document.getElementById('step2-sub').textContent = `หน่วย: ${selectedGame.unit} | กรอกราคาขายและต้นทุนแต่ละร้าน`;
+  document.getElementById('step2-sub').textContent = `หน่วย: ${selectedGame.unit} | ข้อมูลแยกตามเกม`;
+
+  // ล้างข้อมูลเดิมก่อนโหลดข้อมูลของเกมใหม่
+  document.getElementById('pkgArea').innerHTML = '';
+  document.getElementById('shopsGrid').innerHTML = '';
+  pkgId = 0; shopId = 0;
+
   buildStep2();
   goStep(2);
+
+  // เริ่ม sync สำหรับเกมนี้โดยเฉพาะ (path: /games/gameId)
+  startSync(selectedGame.id);
 }
 
 // ── Step 2 Build ──
 function buildStep2(){
+  // ถ้าข้อมูลว่าง (เพิ่งล้าง) ให้โหลด preset ชั่วคราวก่อน — startSync จะแทนที่ถ้ามีข้อมูลใน Firebase
   const area = document.getElementById('pkgArea');
-  if(area.children.length===0){
-    (selectedGame.pkgs||[]).forEach(p=>addPkg(p.n,p.u,p.s));
-    if((selectedGame.pkgs||[]).length===0) addPkg();
-    document.querySelectorAll('.pkg-row').forEach(r=>updateProfitLive(r.dataset.id));
-  } else { rebuildPkgCols(); }
-  if(document.querySelectorAll('.shop-card').length===0){
+  if(area.children.length === 0) {
+    (selectedGame.pkgs || []).forEach(p => addPkg(p.n, p.u, p.s));
+    if((selectedGame.pkgs || []).length === 0) addPkg();
+    document.querySelectorAll('.pkg-row').forEach(r => updateProfitLive(r.dataset.id));
+  }
+  if(document.querySelectorAll('.shop-card').length === 0) {
     addShop('ร้านตัวเอง');
     addShop('ร้านที่ 1');
   }
@@ -1246,48 +1268,76 @@ function applyProfile(data) {
 
 // ── Save with debounce 800ms ──
 function triggerSave() {
+  if (!selectedGame) return;  // ยังไม่ได้เลือกเกม ไม่บันทึก
   _localChange = true;
   clearTimeout(_saveTimer);
   setSyncStatus('saving');
   _saveTimer = setTimeout(async () => {
-    if (!window.fbSave) {
-      // fallback: localStorage only
-      localStorage.setItem('gpa_data', JSON.stringify(collectCurrentData()));
-      setSyncStatus('ok');
-      return;
-    }
-    const data = collectCurrentData();
-    localStorage.setItem('gpa_data', JSON.stringify(data)); // local backup
-    const ok = await window.fbSave(data);
+    const gameId = selectedGame.id;
+    const data   = collectCurrentData();
+    // local backup per game
+    localStorage.setItem('gpa_game_' + gameId, JSON.stringify(data));
+    if (!window.fbSave) { setSyncStatus('offline'); return; }
+    const ok = await window.fbSave(gameId, data);
     setSyncStatus(ok ? 'ok' : 'err');
-    setTimeout(() => { _localChange = false; }, 2000); // grace period
+    setTimeout(() => { _localChange = false; }, 2000);
   }, 800);
 }
 
-// ── Listen for remote changes ──
-function startSync() {
+// ── Start sync for a specific game ──
+function startSync(gameId) {
+  if (!gameId) return;
+
   if (!window.fbListen) {
-    // offline: load from localStorage
-    const raw = localStorage.getItem('gpa_data');
-    if (raw) try { applyProfile(JSON.parse(raw)); } catch(e) {}
+    // offline: load from localStorage per game
+    const raw = localStorage.getItem('gpa_game_' + gameId);
+    if (raw) try { applyDataOnly(JSON.parse(raw)); } catch(e) {}
     setSyncStatus('offline');
     return;
   }
 
-  // First: load once immediately
-  window.fbLoad().then(data => {
-    if (data) applyProfile(data);
+  setSyncStatus('saving');  // show connecting
+
+  // Load once immediately
+  window.fbLoad(gameId).then(data => {
+    if (data) applyDataOnly(data);
     setSyncStatus('ok');
   });
 
-  // Then: listen real-time
-  window.fbListen((remoteData, updatedAt) => {
-    if (_localChange) return;   // skip — เราเพิ่งแก้เอง
+  // Then listen real-time
+  window.fbListen(gameId, (remoteData, updatedAt) => {
+    if (_localChange) return;
     if (_isSyncing)   return;
     _isSyncing = true;
-    applyProfile(remoteData);
+    applyDataOnly(remoteData);
     setSyncStatus('synced', updatedAt);
     setTimeout(() => { _isSyncing = false; }, 500);
+  });
+}
+
+// applyDataOnly: ใส่แค่ pkgs+shops ไม่เปลี่ยน game หรือ step
+function applyDataOnly(data) {
+  if (!data) return;
+  // Shops
+  document.getElementById('shopsGrid').innerHTML = '';
+  shopId = 0;
+  (data.shops || []).forEach(s => addShop(s.name));
+  const shopCards = document.querySelectorAll('.shop-card');
+  (data.shops || []).forEach((s, i) => {
+    if (!s.url || !shopCards[i]) return;
+    const ui = shopCards[i].querySelector('.shop-link-input');
+    if (ui) { ui.value = s.url; updateLinkBtn(shopCards[i].dataset.id); }
+  });
+  // Packages
+  document.getElementById('pkgArea').innerHTML = '';
+  pkgId = 0;
+  (data.pkgs || []).forEach(p => {
+    addPkg(p.name, '', p.sell);
+    const row = document.querySelector('.pkg-row:last-child');
+    if (!row) return;
+    const cells = row.querySelectorAll('.sh-cost-cell');
+    (p.costs || []).forEach((c, i) => { if (cells[i]) cells[i].value = c; });
+    updateProfitLive(row.dataset.id);
   });
 }
 
@@ -1330,18 +1380,18 @@ document.addEventListener('input', (e) => {
   triggerSave();
 });
 
-// ── Start on Firebase ready ──
-let _syncStarted = false;
-function tryStartSync() {
-  if (_syncStarted) return;
+// ── Firebase status indicator (ไม่ auto-sync แล้ว — sync เรียกจาก selectGame) ──
+function waitFirebase() {
   if (window.firebaseReady) {
-    _syncStarted = true;
-    startSync();
+    const dot = document.getElementById('syncDot');
+    const txt = document.getElementById('syncStatus');
+    if (dot) dot.style.background = 'var(--teal)';
+    if (txt) { txt.textContent = '☁️ Firebase พร้อม — เลือกเกมเพื่อเริ่ม'; txt.style.color = 'var(--txt2)'; }
   } else {
-    setTimeout(tryStartSync, 300);
+    setTimeout(waitFirebase, 300);
   }
 }
-tryStartSync();
+waitFirebase();
 
 </script>
 </body>
