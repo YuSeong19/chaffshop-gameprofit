@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Profiles: ทุกคนอ่านได้ เขียนได้ (ถ้าต้องการล็อกอิน ให้แก้ทีหลัง)
+    match /saved-profiles/{profileId} {
+      allow read, write: if true;
+    }
+    // Transactions
+    match /transactions/{txId} {
+      allow read, write: if true;
+    }
+  }
+}
