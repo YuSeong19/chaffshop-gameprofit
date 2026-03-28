@@ -1,16 +1,8 @@
 {
   "rules": {
-    "rooms": {
-      "$roomId": {
-        ".read": true,
-        ".write": true
-      }
-    },
-    "profiles": {
-      "$profileId": {
-        ".read": true,
-        ".write": true
-      }
+    "shop-data": {
+      ".read": true,
+      ".write": true
     }
   }
 }
